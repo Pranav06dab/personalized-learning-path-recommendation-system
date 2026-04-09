@@ -1,28 +1,64 @@
 import streamlit as st
-import matplotlib.pyplot as plt
+import plotly.express as px
 
 from logic.processor import process_data
 from logic.diagnosis import run_diagnosis
 from logic.learning_style import get_learning_style
 from logic.recommender import generate_recommendations
 from logic.scheduler import generate_schedule
+from logic.data_handler import save_data, load_data
+from logic.auth import login, signup
 
-# ---- page config ----
+# ---- session state ----
+if "user" not in st.session_state:
+    st.session_state.user = None
+
+# ---- LOGIN PAGE ----
+if st.session_state.user is None:
+
+    st.title("🔐 Login / Signup")
+
+    choice = st.radio("Choose Option", ["Login", "Signup"])
+
+    username = st.text_input("Username")
+    password = st.text_input("Password", type="password")
+
+    if choice == "Signup":
+        if st.button("Create Account"):
+            if signup(username, password):
+                st.success("Account created successfully. Please login.")
+            else:
+                st.error("User already exists")
+
+    else:
+        if st.button("Login"):
+            if login(username, password):
+                st.session_state.user = username
+                st.success("Login successful")
+                st.rerun()
+            else:
+                st.error("Invalid credentials")
+
+    st.stop()
+
+# ---- MAIN APP ----
 st.set_page_config(page_title="Learning Advisor", layout="wide")
 
-# ---- title ----
 st.title("📊 Personalized Learning Advisor")
+st.markdown(f"### 🚀 Welcome, {st.session_state.user}")
 st.write("Analyze your learning behavior and get a personalized study plan.")
+
+# ---- logout button ----
+if st.button("Logout"):
+    st.session_state.user = None
+    st.rerun()
 
 # ---- input section ----
 st.subheader("⏱️ Daily Availability")
 
 daily_time = st.number_input(
     "Available study time (minutes per day)",
-    min_value=30,
-    max_value=600,
-    value=120,
-    step=10
+    30, 600, 120, 10
 )
 
 st.subheader("📚 Subject Inputs")
@@ -73,158 +109,94 @@ if analyze:
 
     processed = process_data(subjects)
     diagnosis = run_diagnosis(processed)
+
+    # ---- save per user ----
+    save_data(diagnosis, st.session_state.user)
+
     style = get_learning_style(processed)
     recs = generate_recommendations(diagnosis)
     schedule = generate_schedule(diagnosis, daily_time)
 
-    # ---- learning style ----
     st.subheader("🧬 Learning Style")
     st.success(style)
 
-    # ---- explainability (NEW) ----
-    st.subheader("🧠 Why This Plan?")
+    # ---- KPI ----
+    col1, col2, col3 = st.columns(3)
 
-    for d in diagnosis:
-        if d["subject"].strip() == "":
-            continue
+    avg_score = sum([d["score"] for d in diagnosis]) / len(diagnosis)
+    avg_eff = sum([d["efficiency"] for d in diagnosis]) / len(diagnosis)
+    weak_count = len([d for d in diagnosis if d["status"] == "Weak"])
 
-        st.write(
-            f"📘 {d['subject']}: Score = {d['score']}%, Time = {d['time']} min → {d['issue']}"
-        )
+    col1.metric("Average Score", f"{round(avg_score,1)}%")
+    col2.metric("Efficiency", f"{round(avg_eff,2)}")
+    col3.metric("Weak Subjects", weak_count)
 
-    # ---- diagnosis section ----
+    st.divider()
+
+    # ---- diagnosis ----
     st.subheader("🧠 Subject-wise Diagnosis")
 
     for d in diagnosis:
-
         if d["subject"].strip() == "":
             continue
 
-        st.markdown(f"### 📘 {d['subject']} ({d['topic']})")
+        st.markdown(f"### 📘 {d['subject']}")
 
         c1, c2, c3 = st.columns(3)
+        c1.metric("Score", f"{d['score']}%")
+        c2.metric("Effort", d["effort_level"])
 
-        with c1:
-            st.metric("Score", f"{d['score']}%")
+        if d["status"] == "Weak":
+            c3.error("Weak 🔴")
+        elif d["status"] == "Moderate":
+            c3.warning("Moderate 🟡")
+        else:
+            c3.success("Strong 🟢")
 
-        with c2:
-            st.metric("Effort", d["effort_level"])
+        st.write(f"Issue: {d['issue']}")
 
-        with c3:
-            # ---- colored status (UPDATED) ----
-            if d["status"] == "Weak":
-                st.error("Weak 🔴")
-            elif d["status"] == "Moderate":
-                st.warning("Moderate 🟡")
-            else:
-                st.success("Strong 🟢")
+    st.divider()
 
-        st.write(f"**Issue Identified:** {d['issue']}")
-        st.write("---")
-
-    # ---- recommendations ----
-    st.subheader("📌 Personalized Recommendations")
-
-    for r in recs:
-        st.markdown(f"### 📘 {r['subject']}")
-        st.info(r["message"])
-
-    # ---- daily schedule ----
+    # ---- schedule ----
     st.subheader("📅 Daily Study Plan")
 
     for s in schedule:
-        st.write(
-            f"📘 {s['subject']} → {s['time']} min "
-            f"({s['sessions']} sessions) [{s['status']}]"
-        )
+        st.write(f"{s['subject']} → {s['time']} min")
 
-    st.subheader("🔁 Revision Strategy")
-    st.write("• Weak subjects → daily")
-    st.write("• Moderate → every 2 days")
-    st.write("• Strong → twice a week")
+    st.divider()
 
-    # ================= WEEKLY PLAN =================
-    st.subheader("🗓️ Weekly Study Plan")
+    # ---- charts ----
+    st.subheader("📊 Analytics")
 
-    days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
-    weekly_plan = {day: [] for day in days}
+    names = [d["subject"] for d in diagnosis if d["subject"]]
+    scores = [d["score"] for d in diagnosis if d["subject"]]
 
-    for s in schedule:
+    fig = px.bar(x=names, y=scores, color=scores)
+    st.plotly_chart(fig, use_container_width=True)
 
-        subject = s["subject"]
-        base_time = s["time"]
-        status = s["status"]
+    st.divider()
 
-        if status == "Weak":
-            for i, day in enumerate(days):
-                if i % 2 == 0:
-                    time = int(base_time * 1.2)
-                else:
-                    time = int(base_time * 0.8)
-                weekly_plan[day].append((subject, time))
+    # ---- progress ----
+    st.subheader("📈 Progress Tracking")
 
-        elif status == "Moderate":
-            for i, day in enumerate(days):
-                if i % 2 == 0:
-                    weekly_plan[day].append((subject, int(base_time * 0.7)))
+    history = load_data(st.session_state.user)
 
-        else:
-            weekly_plan["Wed"].append((subject, int(base_time * 0.5)))
-            weekly_plan["Sun"].append((subject, int(base_time * 0.6)))
+    if history:
+        subject_data = {}
 
-    cols = st.columns(4)
+        for entry in history:
+            subject_data.setdefault(entry["subject"], []).append(entry["score"])
 
-    for i, day in enumerate(days):
-        with cols[i % 4]:
-            st.markdown(f"**{day}**")
+        for sub, scores in subject_data.items():
+            if len(scores) < 2:
+                continue
 
-            if not weekly_plan[day]:
-                st.info("Rest / Light revision")
+            diff = scores[-1] - scores[-2]
+
+            if diff > 0:
+                st.success(f"{sub}: +{diff}")
             else:
-                for sub, time in weekly_plan[day]:
-                    st.write(f"{sub} → {time} min")
+                st.error(f"{sub}: {diff}")
 
-    # ---- graphs ----
-    st.subheader("📊 Performance Overview")
-
-    names = [d["subject"] for d in diagnosis if d["subject"].strip() != ""]
-    scores = [d["score"] for d in diagnosis if d["subject"].strip() != ""]
-    times = [d["time"] for d in diagnosis if d["subject"].strip() != ""]
-    efficiency = [d["efficiency"] for d in diagnosis if d["subject"].strip() != ""]
-
-    col1, col2 = st.columns(2)
-
-    with col1:
-        fig1, ax1 = plt.subplots(figsize=(4, 3))
-        colors = ["green" if s >= 75 else "orange" if s >= 50 else "red" for s in scores]
-        ax1.bar(names, scores, color=colors)
-        ax1.set_title("Performance (%)")
-
-        for i, v in enumerate(scores):
-            ax1.text(i, v + 2, str(v), ha='center', fontsize=8)
-
-        plt.tight_layout()
-        st.pyplot(fig1)
-
-    with col2:
-        fig2, ax2 = plt.subplots(figsize=(4, 3))
-        ax2.bar(names, times)
-        ax2.set_title("Study Time")
-
-        for i, v in enumerate(times):
-            ax2.text(i, v + 2, str(v), ha='center', fontsize=8)
-
-        plt.tight_layout()
-        st.pyplot(fig2)
-
-    fig3, ax3 = plt.subplots(figsize=(6, 3))
-    eff_colors = ["green" if e >= 1 else "orange" if e >= 0.5 else "red" for e in efficiency]
-
-    ax3.bar(names, efficiency, color=eff_colors)
-    ax3.set_title("Efficiency (Score / Time)")
-
-    for i, v in enumerate(efficiency):
-        ax3.text(i, v + 0.05, str(round(v, 2)), ha='center', fontsize=8)
-
-    plt.tight_layout()
-    st.pyplot(fig3)
+            fig = px.line(y=scores, markers=True, title=sub)
+            st.plotly_chart(fig, use_container_width=True)
